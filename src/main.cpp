@@ -1,15 +1,14 @@
-#define DEBUG 3 //1 - Отладка по серийному порту 2 - проверка входного сигнала
+#define DEBUG 1 //1 - Отладка по серийному порту 2 - проверка входного сигнала
 #define WIDTH 6 //Ширина куба/длина массива к которому приводится массив частот
 #define FHT_N 256 //Количество измерений для преобразования Хартли
 #define LOG_OUT 1 //Логарифмический вывод
 #define OCTAVE 0 //Вывод октавами 
-#define MIDDLE_POINT 25 //Значение смещения на постоянную величину в 6 битном режиме АЦП
+#define MIDDLE_POINT 29 //Значение смещения на постоянную величину в 6 битном режиме АЦП
 #define MIN_VALUE 30 //Нижний порог выходных значений частот
 #define MAX_VALUE 120 //Верхний порог
 #define DIVIDER 3.46
-#define NUMBER 36
+#define NUMBER 30
 #define LOW_LEVEL 2
-
 
 #include <avr/io.h>
 #include <avr/pgmspace.h>
@@ -19,6 +18,18 @@
 
 unsigned char mode = 'r';
 uint8_t intervals[7] = {0, 3, 10, 18, 36, 46, 128}; 
+unsigned char led_on[3]={127,127,127};
+unsigned char led_off[3]={0,0,0};
+unsigned char temp[NUMBER][3];
+uint8_t colors[6][3] =
+{
+	{64, 0, 0},
+	{32, 32, 0},
+	{0, 64, 0},
+	{0, 32, 32},
+	{0, 0, 64},
+	{64, 64, 64}
+};
 
 void drawClear();
 
@@ -103,15 +114,108 @@ void SPI_MasterInit(void)
 	PORTB &= ~((1<<PORTB2)|(1<<PORTB3)|(1<<PORTB5));
 	SPCR |= (1<<SPE)|(1<<MSTR)|(1<<CPHA);//fosc/2 16MHz/2
 	SPSR |=(1<<SPI2X);
-	drawClear();
 }
 
-void SPI_Write(uint8_t num)				
+void SPI_Write()				
 {
-			SPDR = num;
+unsigned char a;
+unsigned char j,i,n;
+
+for (n=0; n<NUMBER; n++)
+{
+	for (j=0; j<3; j++)
+	{
+		a = 0x80;	
+		for (i=0;i<8;i++)	
+		{
+			if ((temp[n][j]&a)==0)
+			{
+				SPDR = 224;//0xE0 0.37us 0	
+			}
+			else
+			{
+				SPDR = 252;//0xFC 0.75us 1 
+			}
 			while(!(SPSR & (1<<SPIF)));
+			a=a>>1;
+		}
+	}
+}
+PORTB |= (1<<PB2);
+PORTB &= ~(1<<PB2);
+_delay_us(50);
 }
 
+void off_strip(void)
+{
+	unsigned char j,i;
+			for (i=0; i<NUMBER; i++)
+			{
+				for (j=0;j<3;j++)
+				{
+					temp[i][j]=led_off[j];
+				}
+			}
+			SPI_Write();
+}
+
+
+
+void draw(uint8_t output[NUMBER])
+{
+	uint8_t j = 0;
+	for( uint8_t i = 0; i < NUMBER; i++)
+	{
+			switch (output[i])
+			{
+				case 0:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = led_off[j];
+					}
+					break;
+				case 1:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = colors[0][j];
+					}
+					break;
+				case 2:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = colors[1][j];
+					}
+					break;
+				case 3:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = colors[2][j];
+					}
+					break;
+				case 4:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = colors[3][j];
+					}
+					break;
+				case 5:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = colors[4][j];
+					}
+					break;
+				case 6:
+					for( j = 0; j < 3; j++)
+					{
+						temp[i][j] = colors[5][j];
+					}
+					break;
+				default:
+					break;
+			}
+	}
+	SPI_Write();
+}
 void packEqual(uint8_t output[NUMBER])
 {
 	uint8_t number = 0;
@@ -134,71 +238,6 @@ void packEqual(uint8_t output[NUMBER])
 	} 	
 }
 
-void drawClear()
-{
-	PORTB &= ~(1<<2);
-	//SPI_Write(0);
-		SPI_Write(0xFF);
-		SPI_Write(0xFF);
-	for(uint8_t i =0; i < 4; i++)
-	{
-		SPI_Write(0xFF);
-	}
-
-	PORTB |= (1<<2); 
-	
-}
-
-void drawDirect(uint8_t output[NUMBER])
-{
-	uint8_t layer = 0, reg = 0, column = 0, mes = 0;
-	for( layer = 0; layer < 6; layer++)
-	{
-		SPI_Write(0);
-		SPI_Write(~(1 << layer));
-		for( reg = 0; reg < 6; reg++)
-		{
-			mes = 0;
-			for( column = 0; column < 6; column++)
-			{
-				if(reg*6 + column < NUMBER && output[reg*6 + column] >0)
-				{
-					mes |= (1<<column);
-					output[reg*6 + column] -= 1;
-				}
-			}
-			SPI_Write(mes);
-		}
-		PORTB |= (1<<2); //Обязательно разобраться с тактированием!!
-		PORTB &= ~(1<<2);
-		drawClear();
-		PORTB |= (1<<2); //Обязательно разобраться с тактированием!!
-		PORTB &= ~(1<<2);
-	}
-}
-
-void drawIntervals(uint8_t output[NUMBER])
-{
-	uint8_t layer = 0, reg = 0, mes = 0;
-	for( layer = 0; layer < 6; layer++)
-	{
-		PORTB &= ~(1<<2);
-		SPI_Write(0);
-		SPI_Write(~(1 << layer));
-		for( reg = 0; reg < 6; reg++)
-		{
-			mes = 0;
-				if(output[reg] >0)
-				{
-					mes = 0x3F;
-					output[reg] -= 1;
-				}
-			SPI_Write(mes);
-		}
-		PORTB |= (1<<2); //Обязательно разобраться с тактированием!!
-	}
-}
-
 void packIntervals(uint8_t output[6])
 {
 	for(uint8_t i = 0; i < NUMBER; i++)
@@ -219,21 +258,11 @@ void packIntervals(uint8_t output[6])
 	}
 }
 
-void drawTest()
-{
-	SPI_Write(0);
-	SPI_Write((1 << 0));
-	SPI_Write(0xFF);
-	for( uint8_t i = 0; i < 4; i++)
-	{
-		SPI_Write(0xFF);
-	}
-}
 int main(void)
 {
 	uint8_t output[NUMBER];
-	//ADCInit();
-	//SPI_MasterInit();
+	ADCInit();
+	SPI_MasterInit();
 	UARTInit();
 	#if DEBUG == 1
 	while(1)
@@ -266,10 +295,7 @@ int main(void)
 						UARTSend(124);
 					} 
 					UARTSend(10);
-				//drawDirect(output);
-				//drawDirect(output);
-				//drawTest();
-				//drawClear();
+				draw(output);
 				break;
 			case 's':
 				sei();
@@ -313,33 +339,7 @@ while(1)
 	
 }
 #elif DEBUG == 3
-unsigned char i=0;
-	DDRB |= ((1<<PORTB2)|(1<<PORTB3)|(1<<PORTB5)); // Ножки SPI на выход
-	PORTB &= ~((1<<PORTB2)|(1<<PORTB3)|(1<<PORTB5)); //низкий уровень
-	SPCR = ((1<<SPE)|(1<<MSTR)); //Включим шину, объявим ведущим
-	PORTB &= ~(1<<PORTB2);
-	SPDR = 0b00010000;
-	while (!(SPSR&(1<<SPIF)));
-	UARTSendString("Sent");
-		SPDR = 0b00000000;
-	while (!(SPSR&(1<<SPIF)));
-	UARTSendString("Sent");
-		SPDR = 0b00000000;
-	while (!(SPSR&(1<<SPIF)));
-	UARTSendString("Sent");
-		SPDR = 0b00000000;
-	while (!(SPSR&(1<<SPIF)));
-	UARTSendString("Sent");
-		SPDR = 0b00000000;
-	while (!(SPSR&(1<<SPIF)));
-	UARTSendString("Sent");
-		SPDR = 0b00000000;
-	while (!(SPSR&(1<<SPIF)));
-	UARTSendString("Sent");
-	PORTB |= (1<<PORTB2);
-	
-	_delay_ms(2000);
-	
+
 while(1)
 {
 	
