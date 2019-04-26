@@ -1,4 +1,4 @@
-#define DEBUG 2 //1 - Отладка по серийному порту 2 - проверка входного сигнала
+#define DEBUG 3 //1 - Отладка по серийному порту 2 - проверка входного сигнала
 #define WIDTH 6 //Ширина куба/длина массива к которому приводится массив частот
 #define FHT_N 256 //Количество измерений для преобразования Хартли
 #define LOG_OUT 1 //Логарифмический вывод
@@ -17,21 +17,9 @@
 #include <Arduino.h>
 
 unsigned char mode = 'r';
-uint8_t intervals[7] = {0, 3, 10, 18, 36, 46, 128}; 
-unsigned char led_on[3]={127,127,127};
-unsigned char led_off[3]={0,0,0};
-unsigned char temp[NUMBER][3];
-uint8_t colors[6][3] =
-{
-	{64, 0, 0},
-	{32, 32, 0},
-	{0, 64, 0},
-	{0, 32, 32},
-	{0, 0, 64},
-	{64, 64, 64}
-};
+uint8_t intervals[7] = {0, 3, 10, 18, 36, 46, 128};
 
-void drawClear();
+void offCube();
 
 void UARTInit()
 {
@@ -114,108 +102,73 @@ void SPI_MasterInit(void)
 	PORTB &= ~((1<<PORTB2)|(1<<PORTB3)|(1<<PORTB5));
 	SPCR |= (1<<SPE)|(1<<MSTR)|(1<<CPHA);//fosc/2 16MHz/2
 	SPSR |=(1<<SPI2X);
+	offCube();
 }
 
-void SPI_Write()				
+void SPI_Write(uint8_t layer, uint8_t number)			//Зажжение столбца number до уровня layer	
 {
-unsigned char a;
-unsigned char j,i,n;
-
-for (n=0; n<NUMBER; n++)
-{
-	for (j=0; j<3; j++)
+	uint8_t mes = 0;
+	if( layer == 0 ) return;
+  for( uint8_t i = 0; i < layer; i++)
 	{
-		a = 0x80;	
-		for (i=0;i<8;i++)	
+     mes |= (1 << i);
+	}
+  uint8_t shift = ceil(number/8);
+	for( uint8_t i = 0; i < 5; i++)
+	{
+		if( i == shift)
 		{
-			if ((temp[n][j]&a)==0)
-			{
-				SPDR = 224;//0xE0 0.37us 0	
-			}
-			else
-			{
-				SPDR = 252;//0xFC 0.75us 1 
-			}
+			SPDR = ~(1 << number % 8);
 			while(!(SPSR & (1<<SPIF)));
-			a=a>>1;
+		}
+		else
+		{
+			SPDR = 0b11111111;
+			while(!(SPSR & (1<<SPIF)));
 		}
 	}
-}
 PORTB |= (1<<PB2);
 PORTB &= ~(1<<PB2);
 _delay_us(50);
 }
 
-void off_strip(void)
+void offCube(void)
 {
-	unsigned char j,i;
-			for (i=0; i<NUMBER; i++)
-			{
-				for (j=0;j<3;j++)
-				{
-					temp[i][j]=led_off[j];
-				}
-			}
-			SPI_Write();
+	for( uint8_t i = 0; i < 6; i ++)
+	{
+	  SPDR = 0b00000000;
+    while(!(SPSR & (1<<SPIF)));
+	}
+	PORTB |= (1<<PB2);
+PORTB &= ~(1<<PB2);
 }
-
-
 
 void draw(uint8_t output[NUMBER])
 {
-	uint8_t j = 0;
-	for( uint8_t i = 0; i < NUMBER; i++)
+	offCube();
+  for( uint8_t i = 0; i < NUMBER; i++ )
 	{
-			switch (output[i])
-			{
-				case 0:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = led_off[j];
-					}
-					break;
-				case 1:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = colors[0][j];
-					}
-					break;
-				case 2:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = colors[1][j];
-					}
-					break;
-				case 3:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = colors[2][j];
-					}
-					break;
-				case 4:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = colors[3][j];
-					}
-					break;
-				case 5:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = colors[4][j];
-					}
-					break;
-				case 6:
-					for( j = 0; j < 3; j++)
-					{
-						temp[i][j] = colors[5][j];
-					}
-					break;
-				default:
-					break;
-			}
+		SPI_Write(output[i], i);
 	}
-	SPI_Write();
 }
+
+void drawTest()
+{
+	offCube();
+	SPDR = 0b11110111;
+	while(!(SPSR & (1<<SPIF)));
+
+	for( uint8_t i = 0; i < 4; i++)
+	{
+		SPDR = 0b00000000;
+		while(!(SPSR & (1<<SPIF)));
+	}
+		SPDR = 0b01000000;
+	while(!(SPSR & (1<<SPIF)));
+		PORTB |= (1<<PB2);
+PORTB &= ~(1<<PB2);
+}
+
 void packEqual(uint8_t output[NUMBER])
 {
 	uint8_t number = 0;
@@ -263,7 +216,7 @@ int main(void)
 	uint8_t output[NUMBER];
 	ADCInit();
 	SPI_MasterInit();
-	UARTInit();
+	//UARTInit();
 	#if DEBUG == 1
 	while(1)
 	{
@@ -342,7 +295,14 @@ while(1)
 
 while(1)
 {
-	
+	drawTest();
+	//UARTSendString("Draw");
+	//UARTSend(10);
+	_delay_ms(500);
+	offCube();
+	//UARTSendString("Clear");
+	//UARTSend(10);
+	_delay_ms(500);
 }
 #endif
 }
