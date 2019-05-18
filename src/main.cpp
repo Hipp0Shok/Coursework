@@ -1,27 +1,29 @@
-#define DEBUG 3 //1 - Отладка по серийному порту 2 - проверка входного сигнала
-#define WIDTH 6 //Ширина куба/длина массива к которому приводится массив частот
+#define DEBUG 3 //1 - Отладка по серийному порту 2 - проверка входного сигнала 3 - проверка режима отображения 
 #define FHT_N 256 //Количество измерений для преобразования Хартли
 #define LOG_OUT 1 //Логарифмический вывод
-#define OCTAVE 0 //Вывод октавами 
-#define MIDDLE_POINT 28 //Значение смещения на постоянную величину в 6 битном режиме АЦП
+#define MIDDLE_POINT 27 //Значение смещения на постоянную величину в 6 битном режиме АЦП
 #define MIN_VALUE 30 //Нижний порог выходных значений частот
 #define MAX_VALUE 120 //Верхний порог
-#define DIVIDER 3.46
-#define NUMBER 30
+#define DIVIDER 3.56
+#define NUMBER 36
 #define LOW_LEVEL 2
-
+#define LATCH 8
+#define CLOCK 13
+#define DATA 11
 #include <avr/io.h>
-#include <avr/pgmspace.h>
+
 #include <FHT.h>
 #include "avr/interrupt.h"
 #include <Arduino.h>
+#include <avr/pgmspace.h>
+#include <math.h>
+#include <SPI.h>
 
 unsigned char mode = 'r';
-uint8_t intervals[7] = {0, 3, 10, 18, 36, 46, 128};
 
 void offCube();
 
-void UARTInit()
+void UARTInit() //Инициализация серийного порта
 {
 	UBRR0H = 0;
 	UBRR0L = 8; //baudrate 115200
@@ -30,19 +32,19 @@ void UARTInit()
 	UCSR0C |= (1<<UCSZ01)|(1<<UCSZ00);//Установка 8 бит данных и 1 стоп бита
 }
 
-void UARTSend(unsigned char c)
+void UARTSend(unsigned char c) //Посылка пакета по серийному порту
 {
 	while(!(UCSR0A &(1<<UDRE0))); //Ожидание пока освободится регистр передачи
 	UDR0 = c;
 }
 
-unsigned char UARTGet(void)
+unsigned char UARTGet(void) //Получение пакета по серийному порту
 {
 	while(!(UCSR0A & (1<<RXC0))); //Ожидание, пока поднимется флаг о наличии непрочитанных данных в регистре
 	return UDR0;
 }
 
-void UARTSendString(char *s)
+void UARTSendString(char *s) //Отправка строки по серийному порту
 {
 	while(*s != 0)
 	{
@@ -50,7 +52,7 @@ void UARTSendString(char *s)
 	}
 }
 
-void UARTSendUInt(uint16_t c)
+void UARTSendUInt(uint16_t c) //Отправка беззнакового целого по серийному порту
 {
 	unsigned char temp;
 	c = c%10000;
@@ -62,7 +64,7 @@ void UARTSendUInt(uint16_t c)
 	UARTSend(temp%10+'0');
 }
 
-void ADCInit(void)
+void ADCInit(void) //Инициализация АЦП
 {
 	ADMUX |= (1<<MUX2)|(1<<MUX1)|(1<<MUX0)
 				|(1<<ADLAR)
@@ -73,7 +75,7 @@ void ADCInit(void)
 						|(1<<ADPS2)|(1<<ADPS0); //Делитель на 32
 
 }
-uint16_t ADCCapture()
+uint16_t ADCCapture() //Приём одного семпла
 {
 	unsigned int temp = 0;
 	while(!(ADCSRA &(1<<ADIF))); //Ожидание завершения преобразования
@@ -83,7 +85,7 @@ uint16_t ADCCapture()
 	return temp;
 }
 
-void captureWave(uint16_t count)
+void captureWave(uint16_t count) //Приём массива семплов
 {
 	for(uint16_t i =0; i <count; i++)
 	{
@@ -96,17 +98,19 @@ void captureWave(uint16_t count)
 	}
 }
 
-void SPI_MasterInit(void)
+
+
+void SPI_MasterInit(void) //Инициализация SPI
 {
-	DDRB =(1<<PB3)|(1<<PB2)|(1<<PB5)|(0<<PB4); //pb2 - ss pb3 - MOSI pb4 - MISO PB5 - SCK
-	PORTB &= ~((1<<PORTB2)|(1<<PORTB3)|(1<<PORTB5));
-	SPCR |= (1<<SPE)|(1<<MSTR)|(1<<CPHA);//fosc/2 16MHz/2
-	SPSR |=(1<<SPI2X);
-	offCube();
+	DDRB |= ((1<<PB2)|(1<<PB3)|(1<<PB5));
+	PORTB &= ~((1<<PB3)|(1<<PB5));
+	PORTB |= 1<<PB2;
+	SPCR |= ((1<<SPE)|(1<<MSTR));
 }
 
 void SPI_Write(uint8_t layer, uint8_t number)			//Зажжение столбца number до уровня layer	
 {
+	PORTB &= ~(1<<PB2);
 	uint8_t mes = 0;
 	if( layer == 0 ) return;
   for( uint8_t i = 0; i < layer; i++)
@@ -118,6 +122,7 @@ void SPI_Write(uint8_t layer, uint8_t number)			//Зажжение столбц�
 	{
 		if( i == shift)
 		{
+			//SPI.write()
 			SPDR = ~(1 << number % 8);
 			while(!(SPSR & (1<<SPIF)));
 		}
@@ -128,22 +133,28 @@ void SPI_Write(uint8_t layer, uint8_t number)			//Зажжение столбц�
 		}
 	}
 PORTB |= (1<<PB2);
-PORTB &= ~(1<<PB2);
 _delay_us(50);
 }
 
-void offCube(void)
+void offCube(void) //Выключение куба
 {
-	for( uint8_t i = 0; i < 6; i ++)
-	{
-	  SPDR = 0b00000000;
-    while(!(SPSR & (1<<SPIF)));
-	}
+	PORTB &= ~(1<<PB2);
+	SPI.transfer(0);
+	SPI.transfer(0);
+	SPI.transfer(0);
+	SPI.transfer(0);
+	SPI.transfer(0);
+	SPI.transfer(0);
 	PORTB |= (1<<PB2);
-PORTB &= ~(1<<PB2);
 }
 
-void draw(uint8_t output[NUMBER])
+void onCube(void) //Выключение куба
+{
+	PORTB &= ~(1<<PB2);
+	PORTB |= (1<<PB2);
+}
+
+void draw(uint8_t output[NUMBER]) //Отрисовка всего массива
 {
 	offCube();
   for( uint8_t i = 0; i < NUMBER; i++ )
@@ -152,24 +163,7 @@ void draw(uint8_t output[NUMBER])
 	}
 }
 
-void drawTest()
-{
-	offCube();
-	SPDR = 0b11110111;
-	while(!(SPSR & (1<<SPIF)));
-
-	for( uint8_t i = 0; i < 4; i++)
-	{
-		SPDR = 0b00000000;
-		while(!(SPSR & (1<<SPIF)));
-	}
-		SPDR = 0b01000000;
-	while(!(SPSR & (1<<SPIF)));
-		PORTB |= (1<<PB2);
-PORTB &= ~(1<<PB2);
-}
-
-void packEqual(uint8_t output[NUMBER])
+void packEqual(uint8_t output[NUMBER]) //Разбиение диапазона на равные промежутки
 {
 	uint8_t number = 0;
 	for(uint8_t i = 0; i < NUMBER; i++)
@@ -178,7 +172,7 @@ void packEqual(uint8_t output[NUMBER])
 	}
 	for(uint8_t i = 0; i < FHT_N/2; i++)
 	{
-			number = ceil(i/DIVIDER);
+			number = floor(i/DIVIDER);
 			if(fht_log_out[i] > output[number])
 			{
 				output[number] = fht_log_out[i];
@@ -191,33 +185,55 @@ void packEqual(uint8_t output[NUMBER])
 	} 	
 }
 
-void packIntervals(uint8_t output[6])
+void testDraw()
 {
-	for(uint8_t i = 0; i < NUMBER; i++)
+	uint8_t output[37];
+
+	for(uint8_t i = 0; i < 6; i ++)
 	{
-		output[i] = 0;
+		PORTB &= ~(1<<PB2);
+		SPI.transfer(1<<(2+i));
+		SPI.transfer(255);
+		SPI.transfer(255);
+		SPI.transfer(255);
+		SPI.transfer(255);
+		SPI.transfer(255);
+		PORTB |= (1<<PB2);
+		_delay_ms(500);
 	}
-	for( uint8_t i = 0; i < 6; i++)
+	uint8_t mes = 1;
+	for(uint8_t i = 0; i < 6;  i++)
 	{
-		for( uint8_t j = intervals[i]; j < intervals[i+1]; j++ )
+		for( uint8_t j = 0; j < 36; j++)
 		{
-			if( fht_log_out[j] > output[i])
+			PORTB &= ~(1<<PB2);
+			SPI.transfer(1<<(2+i));
+			for(uint8_t k = 0; k < 5; k++)
 			{
-				output[i] = fht_log_out[j];
+				if(uint8_t(j/6) == i )
+					{
+						SPI.transfer(1<<(j%6));
+					}
+				else
+				{
+					SPI.transfer(0);
+				}
 			}
+			PORTB |= (1<<PB2);
+			_delay_ms(500);
 		}
-		output[i] = map(output[i], 0, MAX_VALUE, 0, 7);
-		output[i] = constrain(output[i], 0, 6);
 	}
+
 }
 
 int main(void)
 {
 	uint8_t output[NUMBER];
 	ADCInit();
-	SPI_MasterInit();
-	//UARTInit();
+	SPI.begin();
+	UARTInit();
 	#if DEBUG == 1
+	UARTInit();
 	while(1)
 	{
 		cli();
@@ -295,18 +311,11 @@ while(1)
 
 while(1)
 {
-	drawTest();
-	//UARTSendString("Draw");
-	//UARTSend(10);
-	_delay_ms(500);
-	offCube();
-	//UARTSendString("Clear");
-	//UARTSend(10);
-	_delay_ms(500);
+	testDraw();
+	//_delay_ms(500);
 }
 #endif
 }
-
 
 ISR(USART_RX_vect)
 {
