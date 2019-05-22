@@ -1,15 +1,16 @@
-#define DEBUG 3 //1 - Отладка по серийному порту 2 - проверка входного сигнала 3 - проверка режима отображения 
+#define DEBUG 1 //1 - Отладка по серийному порту 2 - проверка входного сигнала 3 - проверка режима отображения 
 #define FHT_N 256 //Количество измерений для преобразования Хартли
 #define LOG_OUT 1 //Логарифмический вывод
-#define MIDDLE_POINT 27 //Значение смещения на постоянную величину в 6 битном режиме АЦП
+#define MIDDLE_POINT 122 //Значение смещения на постоянную величину в 6 битном режиме АЦП
 #define MIN_VALUE 30 //Нижний порог выходных значений частот
 #define MAX_VALUE 120 //Верхний порог
 #define DIVIDER 3.56
-#define NUMBER 36
+#define NUMBER 6
 #define LOW_LEVEL 2
 #define LATCH 8
 #define CLOCK 13
 #define DATA 11
+#define REPEAT 3
 #include <avr/io.h>
 
 #include <FHT.h>
@@ -81,7 +82,7 @@ uint16_t ADCCapture() //Приём одного семпла
 	while(!(ADCSRA &(1<<ADIF))); //Ожидание завершения преобразования
 	ADCSRA |= (1<<ADIF); //Запуск нового
 	temp += ADCH;
-	temp >>= 2;
+	//temp >>= 2;
 	return temp;
 }
 
@@ -94,11 +95,9 @@ void captureWave(uint16_t count) //Приём массива семплов
 		{
 			fht_input[i] = 0;
 		}
-		fht_input[i]<<=10; //Приведение к 16 битному формату
+		fht_input[i]<<=8; //Приведение к 16 битному формату
 	}
 }
-
-
 
 void SPI_MasterInit(void) //Инициализация SPI
 {
@@ -108,32 +107,28 @@ void SPI_MasterInit(void) //Инициализация SPI
 	SPCR |= ((1<<SPE)|(1<<MSTR));
 }
 
-void SPI_Write(uint8_t layer, uint8_t number)			//Зажжение столбца number до уровня layer	
+void SPIWrite(uint8_t layer, uint8_t number)			//Зажжение столбца number до уровня layer	
 {
-	PORTB &= ~(1<<PB2);
 	uint8_t mes = 0;
 	if( layer == 0 ) return;
-  for( uint8_t i = 0; i < layer; i++)
-	{
-     mes |= (1 << i);
-	}
-  uint8_t shift = ceil(number/8);
+	PORTB &= ~(1<<PB2);
+  SPI.transfer(ceil(pow(2, 6-layer)*(pow(2,layer)-1))); //Выбор всех уровней
+  uint8_t shift = floor(number/8);
+	uint8_t power;
 	for( uint8_t i = 0; i < 5; i++)
 	{
 		if( i == shift)
 		{
-			//SPI.write()
-			SPDR = ~(1 << number % 8);
-			while(!(SPSR & (1<<SPIF)));
+			SPI.transfer(ceil(pow(2,number%8)));
 		}
 		else
 		{
-			SPDR = 0b11111111;
-			while(!(SPSR & (1<<SPIF)));
+			SPI.transfer(0);
 		}
 	}
 PORTB |= (1<<PB2);
-_delay_us(50);
+//_delay_us(80);
+//offCube();
 }
 
 void offCube(void) //Выключение куба
@@ -151,43 +146,60 @@ void offCube(void) //Выключение куба
 void onCube(void) //Выключение куба
 {
 	PORTB &= ~(1<<PB2);
+	SPI.transfer(255);
+	SPI.transfer(255);
+	SPI.transfer(255);
+	SPI.transfer(255);
+	SPI.transfer(255);
+	SPI.transfer(255);
 	PORTB |= (1<<PB2);
+	_delay_ms(10);
+	offCube();
 }
 
-void draw(uint8_t output[NUMBER]) //Отрисовка всего массива
+void draw(uint8_t output[NUMBER][NUMBER]) //Отрисовка всего массива
 {
 	offCube();
   for( uint8_t i = 0; i < NUMBER; i++ )
 	{
-		SPI_Write(output[i], i);
+		for( uint8_t j = 0; j < NUMBER; j++)
+		{
+			SPIWrite(output[i][j], 6*i + j);
+			//_delay_ms(10);
+		}
 	}
 }
 
-void packEqual(uint8_t output[NUMBER]) //Разбиение диапазона на равные промежутки
+void packEqual(uint8_t output[NUMBER][NUMBER]) //Разбиение диапазона на равные промежутки
 {
-	uint8_t number = 0;
+	uint8_t diap = 0;
 	for(uint8_t i = 0; i < NUMBER; i++)
 	{
-		output[i] = 0;
+		for( uint8_t j = 0; j < NUMBER; j++)
+		{
+			output[i][j] = 0;
+		}
 	}
 	for(uint8_t i = 0; i < FHT_N/2; i++)
 	{
-			number = floor(i/DIVIDER);
-			if(fht_log_out[i] > output[number])
+			diap = floor(i/DIVIDER);
+			if(fht_log_out[i] > output[diap/6][diap%6])
 			{
-				output[number] = fht_log_out[i];
+				output[diap/6][diap%6] = fht_log_out[i];
 			}
 	}
 	for(uint8_t i = 0; i < NUMBER; i++)
 	{
-		output[i] = map(output[i], 0, MAX_VALUE, 0, 7);
-		output[i] = constrain(output[i], 0, 6);
+		for(uint8_t j =0; j < NUMBER; j++)
+		{
+			output[i][j] = map(output[i][j], 0, MAX_VALUE, 0, 7);
+			output[i][j] = constrain(output[i][j], 0, 6);
+		}
 	} 	
 }
 
 void testDraw()
 {
-	uint8_t output[37];
 
 	for(uint8_t i = 0; i < 6; i ++)
 	{
@@ -199,44 +211,54 @@ void testDraw()
 		SPI.transfer(255);
 		SPI.transfer(255);
 		PORTB |= (1<<PB2);
-		_delay_ms(500);
+		_delay_ms(100);
 	}
 	uint8_t mes = 1;
-	for(uint8_t i = 0; i < 6;  i++)
+	uint8_t output[NUMBER][NUMBER] =
 	{
-		for( uint8_t j = 0; j < 36; j++)
-		{
-			PORTB &= ~(1<<PB2);
-			SPI.transfer(1<<(2+i));
-			for(uint8_t k = 0; k < 5; k++)
+		{0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0}
+	};
+			for( uint8_t i = 0; i < NUMBER; i++)
 			{
-				if(uint8_t(j/6) == i )
-					{
-						SPI.transfer(1<<(j%6));
-					}
-				else
+				for( uint8_t j = 0; j < NUMBER; j++)
 				{
-					SPI.transfer(0);
+					output[i][j] = 6;
+					draw(output);
+					_delay_ms(100);
+					output[i][j] = 0;
 				}
 			}
-			PORTB |= (1<<PB2);
-			_delay_ms(500);
-		}
-	}
 
 }
 
 int main(void)
 {
-	uint8_t output[NUMBER];
+		uint8_t output[NUMBER][NUMBER]
+	{
+		{1, 0, 0, 0, 0, 0},
+		{0, 2, 0, 0, 0, 0},
+		{0, 0, 3, 0, 0, 0},
+		{0, 0, 0, 4, 0, 0},
+		{0, 0, 0, 0, 5, 0},
+		{0, 0, 0, 0, 0, 6},
+	};
 	ADCInit();
+	_delay_ms(50);
 	SPI.begin();
-	UARTInit();
+	_delay_ms(50);
+	SPI.setClockDivider(SPI_CLOCK_DIV2);
+	SPI.setBitOrder(LSBFIRST);
+	testDraw();
+	uint8_t k = 0;
+	//UARTInit();
 	#if DEBUG == 1
-	UARTInit();
 	while(1)
 	{
-		cli();
 		switch(mode)
 		{
 			case 'r':
@@ -258,13 +280,10 @@ int main(void)
 				
 				sei();
 				packEqual(output);
-				for(uint8_t i=0; i<NUMBER; i++)
-					{
-						UARTSend(output[i] + '0');
-						UARTSend(124);
-					} 
-					UARTSend(10);
+				for(k = 0; k < REPEAT; k++)
+				{
 				draw(output);
+				} 
 				break;
 			case 's':
 				sei();
@@ -281,6 +300,7 @@ int main(void)
     }
 	} 
 #elif DEBUG==2
+UARTInit();
 while(1)
 {
 	switch (mode)
@@ -308,11 +328,12 @@ while(1)
 	
 }
 #elif DEBUG == 3
-
 while(1)
 {
+	draw(output);
+	_delay_ms(500);
 	testDraw();
-	//_delay_ms(500);
+	_delay_ms(500);
 }
 #endif
 }
